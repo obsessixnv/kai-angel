@@ -28,8 +28,6 @@ from utils import (
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "")
-KAI_CURRENT_LOCATION = os.getenv("KAI_CURRENT_LOCATION", "")
-KAI_CURRENT_SITUATION = os.getenv("KAI_CURRENT_SITUATION", "")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -89,17 +87,6 @@ async def _analyze_user_background(chat_id: int, user_id: int, username: str, pr
 
     except Exception as e:
         logger.error(f"Background analysis error for user {user_id}: {e}")
-
-
-def _inject_context(base_system: str) -> str:
-    extras = []
-    if KAI_CURRENT_LOCATION:
-        extras.append(f"CURRENT LOCATION: {KAI_CURRENT_LOCATION}")
-    if KAI_CURRENT_SITUATION:
-        extras.append(f"CURRENT SITUATION: {KAI_CURRENT_SITUATION}")
-    if extras:
-        return base_system + "\n\n" + "\n".join(extras) + "\nAnswer questions based on this context. Don't bring it up unprompted."
-    return base_system
 
 
 async def _handle_vision_request(message: types.Message, chat_id: int, system_prompt: str) -> bool:
@@ -329,7 +316,7 @@ async def handle_private_message(message: types.Message):
         asyncio.create_task(_analyze_user_background(chat_id, user.id, username, profile))
 
     # Build system prompt with location + people context
-    base_system = _inject_context(SYSTEM_PROMPT) + "\nYou are chatting 1-on-1 in private messages. Be natural."
+    base_system = SYSTEM_PROMPT + "\nYou are chatting 1-on-1 in private messages. Be natural."
     full_system = await _build_system_prompt_with_people(chat_id, base_system)
 
     history = db.get_chat_history(chat_id, limit=500)
@@ -435,7 +422,7 @@ async def handle_group_message(message: types.Message):
 
     # Build full system prompt with location + activity + people context
     activity_instruction = ACTIVITY_INSTRUCTIONS.get(mode, "")
-    base_system = _inject_context(SYSTEM_PROMPT) + "\n" + activity_instruction
+    base_system = SYSTEM_PROMPT + "\n" + activity_instruction
     full_system = await _build_system_prompt_with_people(chat_id, base_system)
 
     # Get conversation history

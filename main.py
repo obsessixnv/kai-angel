@@ -14,12 +14,13 @@ from aiogram.filters import Command
 
 import database as db
 import llm_client
-from prompts import SYSTEM_PROMPT, ACTIVITY_INSTRUCTIONS, SKIP_RESPONSE, PROACTIVE_MESSAGES, LOOK_RATING_PROMPT
+from prompts import SYSTEM_PROMPT, ACTIVITY_INSTRUCTIONS, SKIP_RESPONSE, PROACTIVE_MESSAGES, LOOK_RATING_PROMPT, GENERAL_IMAGE_PROMPT
 from utils import (
     is_directly_addressed,
     is_username_tagged,
     should_trigger_in_medium,
     is_look_rating_request,
+    is_ask_about_photo,
     split_response,
     send_rapid_fire_messages,
     build_people_context,
@@ -101,27 +102,23 @@ def _inject_context(base_system: str) -> str:
     return base_system
 
 
-async def _handle_look_rating(message: types.Message, chat_id: int):
-    """Handle outfit/look rating requests with photo."""
+async def _handle_vision_request(message: types.Message, chat_id: int, system_prompt: str) -> bool:
+    """Generic vision handler: analyze a photo and respond in Kai's voice."""
     user = message.from_user
     if not user:
         return False
-
-    text = (message.text or message.caption or "").lower()
 
     # Find photo: current message OR recent photo from same user
     photo_file_id = None
     if message.photo:
         photo_file_id = message.photo[-1].file_id
     else:
-        # Look back for recent photo from this user
         photo_file_id = db.get_recent_user_photo(chat_id, user.id, minutes=10)
 
     if not photo_file_id:
         await message.answer("фото не вижу бро\nскинь пикчу 🍸")
         return True
 
-    # Download photo
     try:
         file = await bot.get_file(photo_file_id)
         file_bytes_io = await bot.download_file(file.file_path)
@@ -140,20 +137,20 @@ async def _handle_look_rating(message: types.Message, chat_id: int):
             image_b64=image_b64,
             mime_type=mime_type,
             user_prompt=message.text or message.caption or "",
-            system_prompt=LOOK_RATING_PROMPT,
+            system_prompt=system_prompt,
         )
     except Exception as e:
-        logger.error(f"Look analysis error: {e}")
-        await message.answer("не могу оценить ща\nпопробуй позже 🍸")
+        logger.error(f"Vision analysis error: {e}")
+        await message.answer("не могу разглядеть ща\nпопробуй позже 🍸")
         return True
 
     if not response_text:
-        await message.answer("не понял лук\nскинь получше 🍸")
+        await message.answer("не понял что тут\nскинь получше 🍸")
         return True
 
     messages_to_send = split_response(response_text)
     if not messages_to_send:
-        await message.answer("не понял лук\nскинь получше 🍸")
+        await message.answer("не понял что тут\nскинь получше 🍸")
         return True
 
     await send_rapid_fire_messages(message, messages_to_send)
@@ -169,6 +166,16 @@ async def _handle_look_rating(message: types.Message, chat_id: int):
         )
 
     return True
+
+
+async def _handle_look_rating(message: types.Message, chat_id: int):
+    """Handle outfit/look rating requests with photo."""
+    return await _handle_vision_request(message, chat_id, LOOK_RATING_PROMPT)
+
+
+async def _handle_photo_reaction(message: types.Message, chat_id: int):
+    """Handle general 'what do you think about this photo' requests."""
+    return await _handle_vision_request(message, chat_id, GENERAL_IMAGE_PROMPT)
 
 
 async def _build_system_prompt_with_people(chat_id: int, base_system: str) -> str:
@@ -301,6 +308,12 @@ async def handle_private_message(message: types.Message):
     # Handle look rating requests
     if text and is_look_rating_request(text.lower()):
         handled = await _handle_look_rating(message, chat_id)
+        if handled:
+            return
+
+    # Handle general "what do you think about this photo" requests
+    if text and is_ask_about_photo(text.lower()):
+        handled = await _handle_photo_reaction(message, chat_id)
         if handled:
             return
 

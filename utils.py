@@ -103,11 +103,24 @@ LOOK_RATING_KEYWORDS = {
     "как выгляжу", "что скажешь про", "how do i look", "fit review",
 }
 
+ASK_ABOUT_PHOTO_KEYWORDS = {
+    "что думаешь", "как тебе", "что скажешь", "опиши", "что это",
+    "что на фото", "что на пикче", "реакция", "что ты видишь",
+    "how is it", "what do you think", "thoughts", "opinion",
+    "что за", "покажи", "расскажи про", "как тебе",
+}
+
 
 def is_look_rating_request(text: str) -> bool:
     """Check if message is asking Kai to rate their outfit/look."""
     text_lower = text.lower()
     return bool(LOOK_RATING_KEYWORDS & set(text_lower.split()))
+
+
+def is_ask_about_photo(text: str) -> bool:
+    """Check if message is asking Kai about a photo."""
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in ASK_ABOUT_PHOTO_KEYWORDS)
 
 
 def build_people_context(profiles: List[Dict[str, Any]],

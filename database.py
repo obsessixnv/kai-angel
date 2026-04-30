@@ -21,6 +21,8 @@ def init_db():
             user_id INTEGER NOT NULL,
             username TEXT,
             message_text TEXT NOT NULL,
+            media_file_id TEXT,
+            media_type TEXT,
             timestamp TEXT NOT NULL,
             is_bot INTEGER NOT NULL DEFAULT 0
         );
@@ -69,12 +71,13 @@ def init_db():
 
 
 def save_message(chat_id: int, user_id: int, username: Optional[str],
-                 message_text: str, timestamp: datetime, is_bot: bool = False):
+                 message_text: str, timestamp: datetime, is_bot: bool = False,
+                 media_file_id: Optional[str] = None, media_type: Optional[str] = None):
     conn = get_db()
     conn.execute(
-        """INSERT INTO messages (chat_id, user_id, username, message_text, timestamp, is_bot)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (chat_id, user_id, username, message_text, timestamp.isoformat(), int(is_bot))
+        """INSERT INTO messages (chat_id, user_id, username, message_text, media_file_id, media_type, timestamp, is_bot)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (chat_id, user_id, username, message_text, media_file_id, media_type, timestamp.isoformat(), int(is_bot))
     )
     conn.commit()
     conn.close()
@@ -251,6 +254,26 @@ def get_user_recent_messages(chat_id: int, user_id: int, limit: int = 15) -> Lis
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in reversed(rows)]
+
+
+def get_recent_user_photo(chat_id: int, user_id: int, minutes: int = 10) -> Optional[str]:
+    """Get the most recent photo file_id from a user within last N minutes."""
+    from datetime import timedelta
+    cutoff = (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
+    conn = get_db()
+    cursor = conn.execute(
+        """SELECT media_file_id
+           FROM messages
+           WHERE chat_id = ? AND user_id = ? AND is_bot = 0
+             AND media_type = 'photo' AND media_file_id IS NOT NULL
+             AND timestamp >= ?
+           ORDER BY timestamp DESC
+           LIMIT 1""",
+        (chat_id, user_id, cutoff)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row["media_file_id"] if row else None
 
 
 def get_recent_speaker_ids(chat_id: int, limit_messages: int = 20) -> List[int]:

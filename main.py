@@ -103,27 +103,31 @@ def _inject_context(base_system: str) -> str:
 
 async def _handle_look_rating(message: types.Message, chat_id: int):
     """Handle outfit/look rating requests with photo."""
-    if not message.photo:
-        return False
-
     user = message.from_user
     if not user:
         return False
 
-    username = user.username or user.first_name
     text = (message.text or message.caption or "").lower()
 
-    if not is_look_rating_request(text):
-        return False
+    # Find photo: current message OR recent photo from same user
+    photo_file_id = None
+    if message.photo:
+        photo_file_id = message.photo[-1].file_id
+    else:
+        # Look back for recent photo from this user
+        photo_file_id = db.get_recent_user_photo(chat_id, user.id, minutes=10)
+
+    if not photo_file_id:
+        await message.answer("фото не вижу бро\nскинь пикчу 🍸")
+        return True
 
     # Download photo
     try:
-        photo = message.photo[-1]  # largest
-        file = await bot.get_file(photo.file_id)
+        file = await bot.get_file(photo_file_id)
         file_bytes_io = await bot.download_file(file.file_path)
         image_bytes = file_bytes_io.read()
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        mime_type = "image/jpeg"  # Telegram compresses to JPEG
+        mime_type = "image/jpeg"
     except Exception as e:
         logger.error(f"Photo download error: {e}")
         await message.answer("не вижу фото блять\nскинь еще раз 🍸")
@@ -276,16 +280,13 @@ async def handle_private_message(message: types.Message):
     username = user.username or user.first_name
     text = message.text or message.caption or ""
 
-    # Handle look rating requests with photo
-    if message.photo and text:
-        handled = await _handle_look_rating(message, chat_id)
-        if handled:
-            return
+    # Save incoming message (with photo info if present)
+    media_file_id = None
+    media_type = None
+    if message.photo:
+        media_file_id = message.photo[-1].file_id
+        media_type = "photo"
 
-    if not text:
-        return
-
-    # Save incoming message
     db.save_message(
         chat_id=chat_id,
         user_id=user.id,
@@ -293,7 +294,18 @@ async def handle_private_message(message: types.Message):
         message_text=text,
         timestamp=datetime.utcnow(),
         is_bot=False,
+        media_file_id=media_file_id,
+        media_type=media_type,
     )
+
+    # Handle look rating requests
+    if text and is_look_rating_request(text.lower()):
+        handled = await _handle_look_rating(message, chat_id)
+        if handled:
+            return
+
+    if not text:
+        return
 
     # Track user profile
     profile = db.get_or_create_user_profile(chat_id, user.id, username, user.first_name)
@@ -356,16 +368,13 @@ async def handle_group_message(message: types.Message):
     username = user.username or user.first_name
     text = message.text or message.caption or ""
 
-    # Handle look rating requests with photo
-    if message.photo and text:
-        handled = await _handle_look_rating(message, chat_id)
-        if handled:
-            return
+    # Save incoming message (with photo info if present)
+    media_file_id = None
+    media_type = None
+    if message.photo:
+        media_file_id = message.photo[-1].file_id
+        media_type = "photo"
 
-    if not text:
-        return
-
-    # Save incoming message
     db.save_message(
         chat_id=chat_id,
         user_id=user.id,
@@ -373,7 +382,18 @@ async def handle_group_message(message: types.Message):
         message_text=text,
         timestamp=datetime.utcnow(),
         is_bot=False,
+        media_file_id=media_file_id,
+        media_type=media_type,
     )
+
+    # Handle look rating requests
+    if text and is_look_rating_request(text.lower()):
+        handled = await _handle_look_rating(message, chat_id)
+        if handled:
+            return
+
+    if not text:
+        return
 
     # Track user profile
     profile = db.get_or_create_user_profile(chat_id, user.id, username, user.first_name)

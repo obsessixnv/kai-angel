@@ -167,7 +167,7 @@ async def analyze_look(
         }],
         "generationConfig": {
             "temperature": 0.95,
-            "maxOutputTokens": 500,
+            "maxOutputTokens": 800,
         }
     }
 

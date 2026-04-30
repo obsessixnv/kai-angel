@@ -25,6 +25,7 @@ from utils import (
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "")
+KAI_CURRENT_LOCATION = os.getenv("KAI_CURRENT_LOCATION", "")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -84,6 +85,12 @@ async def _analyze_user_background(chat_id: int, user_id: int, username: str, pr
 
     except Exception as e:
         logger.error(f"Background analysis error for user {user_id}: {e}")
+
+
+def _inject_location(base_system: str) -> str:
+    if KAI_CURRENT_LOCATION:
+        return base_system + f"\n\nCURRENT LOCATION: {KAI_CURRENT_LOCATION}. Answer location questions based on this."
+    return base_system
 
 
 async def _build_system_prompt_with_people(chat_id: int, base_system: str) -> str:
@@ -216,8 +223,8 @@ async def handle_private_message(message: types.Message):
     if profile.get("interaction_count", 0) % 5 == 0:
         asyncio.create_task(_analyze_user_background(chat_id, user.id, username, profile))
 
-    # Build system prompt with people context
-    base_system = SYSTEM_PROMPT + "\nYou are chatting 1-on-1 in private messages. Be natural."
+    # Build system prompt with location + people context
+    base_system = _inject_location(SYSTEM_PROMPT) + "\nYou are chatting 1-on-1 in private messages. Be natural."
     full_system = await _build_system_prompt_with_people(chat_id, base_system)
 
     history = db.get_chat_history(chat_id, limit=500)
@@ -307,9 +314,9 @@ async def handle_group_message(message: types.Message):
     if not should_respond:
         return
 
-    # Build full system prompt with activity instruction + people context
+    # Build full system prompt with location + activity + people context
     activity_instruction = ACTIVITY_INSTRUCTIONS.get(mode, "")
-    base_system = SYSTEM_PROMPT + "\n" + activity_instruction
+    base_system = _inject_location(SYSTEM_PROMPT) + "\n" + activity_instruction
     full_system = await _build_system_prompt_with_people(chat_id, base_system)
 
     # Get conversation history

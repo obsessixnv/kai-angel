@@ -12,7 +12,34 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_db():
+    """Migrate existing database schemas to add new columns."""
+    conn = get_db()
+
+    # Check and add columns to messages table
+    cursor = conn.execute("PRAGMA table_info(messages)")
+    msg_cols = {row["name"] for row in cursor.fetchall()}
+    if "media_file_id" not in msg_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN media_file_id TEXT")
+    if "media_type" not in msg_cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN media_type TEXT")
+
+    # Check and add columns to chat_settings table
+    cursor = conn.execute("PRAGMA table_info(chat_settings)")
+    settings_cols = {row["name"] for row in cursor.fetchall()}
+    if "chat_type" not in settings_cols:
+        conn.execute("ALTER TABLE chat_settings ADD COLUMN chat_type TEXT")
+    if "last_proactive_at" not in settings_cols:
+        conn.execute("ALTER TABLE chat_settings ADD COLUMN last_proactive_at TEXT")
+    if "next_proactive_at" not in settings_cols:
+        conn.execute("ALTER TABLE chat_settings ADD COLUMN next_proactive_at TEXT")
+
+    conn.commit()
+    conn.close()
+
+
 def init_db():
+    _migrate_db()
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS messages (

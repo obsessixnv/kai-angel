@@ -97,6 +97,19 @@ async def send_rapid_fire_messages(message: Message, texts: List[str]):
         await message.answer(text)
 
 
+LOOK_RATING_KEYWORDS = {
+    "оцени", "оценка", "лук", "fit", "фит", "аутфит", "outfit", "look",
+    "одежда", "look check", "fit check", "rate my", "rate", "аутфит чек",
+    "как выгляжу", "что скажешь про", "how do i look", "fit review",
+}
+
+
+def is_look_rating_request(text: str) -> bool:
+    """Check if message is asking Kai to rate their outfit/look."""
+    text_lower = text.lower()
+    return bool(LOOK_RATING_KEYWORDS & set(text_lower.split()))
+
+
 def build_people_context(profiles: List[Dict[str, Any]],
                          memories_map: Dict[int, List[Dict[str, Any]]]) -> str:
     """Build a 'PEOPLE IN THIS CHAT' section for the system prompt."""

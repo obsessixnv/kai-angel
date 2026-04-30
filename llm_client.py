@@ -148,6 +148,50 @@ async def analyze_user_profile(
             return _extract_json(text)
 
 
+async def analyze_look(
+    image_b64: str,
+    mime_type: str,
+    user_prompt: str,
+    system_prompt: str,
+) -> Optional[str]:
+    """Analyze an outfit photo using Gemini vision."""
+    api_key = _get_api_key()
+
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"text": system_prompt + "\n\nUser's message: " + user_prompt},
+                {"inline_data": {"mime_type": mime_type, "data": image_b64}}
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.95,
+            "maxOutputTokens": 500,
+        }
+    }
+
+    params = {"key": api_key}
+    headers = {"Content-Type": "application/json"}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(GEMINI_URL, json=payload, params=params, headers=headers) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise Exception(f"Gemini API error {resp.status}: {text}")
+
+            data = await resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                return None
+
+            return parts[0].get("text")
+
+
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     """Try to extract JSON from LLM response."""
     text = text.strip()

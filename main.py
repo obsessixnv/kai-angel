@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import base64
 import random
 import asyncio
 import logging
@@ -13,11 +14,12 @@ from aiogram.filters import Command
 
 import database as db
 import llm_client
-from prompts import SYSTEM_PROMPT, ACTIVITY_INSTRUCTIONS, SKIP_RESPONSE, PROACTIVE_MESSAGES
+from prompts import SYSTEM_PROMPT, ACTIVITY_INSTRUCTIONS, SKIP_RESPONSE, PROACTIVE_MESSAGES, LOOK_RATING_PROMPT
 from utils import (
     is_directly_addressed,
     is_username_tagged,
     should_trigger_in_medium,
+    is_look_rating_request,
     split_response,
     send_rapid_fire_messages,
     build_people_context,
@@ -97,6 +99,72 @@ def _inject_context(base_system: str) -> str:
     if extras:
         return base_system + "\n\n" + "\n".join(extras) + "\nAnswer questions based on this context. Don't bring it up unprompted."
     return base_system
+
+
+async def _handle_look_rating(message: types.Message, chat_id: int):
+    """Handle outfit/look rating requests with photo."""
+    if not message.photo:
+        return False
+
+    user = message.from_user
+    if not user:
+        return False
+
+    username = user.username or user.first_name
+    text = (message.text or message.caption or "").lower()
+
+    if not is_look_rating_request(text):
+        return False
+
+    # Download photo
+    try:
+        photo = message.photo[-1]  # largest
+        file = await bot.get_file(photo.file_id)
+        file_bytes_io = await bot.download_file(file.file_path)
+        image_bytes = file_bytes_io.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        mime_type = "image/jpeg"  # Telegram compresses to JPEG
+    except Exception as e:
+        logger.error(f"Photo download error: {e}")
+        await message.answer("не вижу фото блять\nскинь еще раз 🍸")
+        return True
+
+    await bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    try:
+        response_text = await llm_client.analyze_look(
+            image_b64=image_b64,
+            mime_type=mime_type,
+            user_prompt=message.text or message.caption or "",
+            system_prompt=LOOK_RATING_PROMPT,
+        )
+    except Exception as e:
+        logger.error(f"Look analysis error: {e}")
+        await message.answer("не могу оценить ща\nпопробуй позже 🍸")
+        return True
+
+    if not response_text:
+        await message.answer("не понял лук\nскинь получше 🍸")
+        return True
+
+    messages_to_send = split_response(response_text)
+    if not messages_to_send:
+        await message.answer("не понял лук\nскинь получше 🍸")
+        return True
+
+    await send_rapid_fire_messages(message, messages_to_send)
+
+    for msg_text in messages_to_send:
+        db.save_message(
+            chat_id=chat_id,
+            user_id=0,
+            username="Kai Angel",
+            message_text=msg_text,
+            timestamp=datetime.utcnow(),
+            is_bot=True,
+        )
+
+    return True
 
 
 async def _build_system_prompt_with_people(chat_id: int, base_system: str) -> str:
@@ -200,9 +268,6 @@ async def cmd_whoami(message: types.Message):
 @router.message(F.chat.type == ChatType.PRIVATE)
 async def handle_private_message(message: types.Message):
     """Handle private DMs — every message is directed at Kai."""
-    if not message.text and not message.caption:
-        return
-
     chat_id = message.chat.id
     user = message.from_user
     if not user:
@@ -210,6 +275,15 @@ async def handle_private_message(message: types.Message):
 
     username = user.username or user.first_name
     text = message.text or message.caption or ""
+
+    # Handle look rating requests with photo
+    if message.photo and text:
+        handled = await _handle_look_rating(message, chat_id)
+        if handled:
+            return
+
+    if not text:
+        return
 
     # Save incoming message
     db.save_message(
@@ -273,9 +347,6 @@ async def handle_private_message(message: types.Message):
 
 @router.message(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
 async def handle_group_message(message: types.Message):
-    if not message.text and not message.caption:
-        return
-
     bot_username = await get_bot_username()
     chat_id = message.chat.id
     user = message.from_user
@@ -284,6 +355,15 @@ async def handle_group_message(message: types.Message):
 
     username = user.username or user.first_name
     text = message.text or message.caption or ""
+
+    # Handle look rating requests with photo
+    if message.photo and text:
+        handled = await _handle_look_rating(message, chat_id)
+        if handled:
+            return
+
+    if not text:
+        return
 
     # Save incoming message
     db.save_message(

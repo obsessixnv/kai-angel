@@ -66,8 +66,22 @@ def should_trigger_in_medium(message: Message, bot_username: str, bot_id: int = 
     return False
 
 
+def clean_llm_output(text: str) -> str:
+    """Strip accidental timestamp/username prefixes that LLM sometimes mimics."""
+    import re
+    # Remove patterns like: [2026-04-30T13:27:31.256844] @Kai Angel: yo brat
+    text = re.sub(
+        r'^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s*@[^:]+:\s*',
+        '',
+        text,
+        flags=re.MULTILINE
+    )
+    return text.strip()
+
+
 def split_response(text: str) -> List[str]:
     """Split LLM response into rapid-fire messages."""
+    text = clean_llm_output(text)
     lines = [line.strip() for line in text.strip().split("\n") if line.strip()]
     # Filter out skip markers
     lines = [line for line in lines if line.lower() not in ("<skip>", "skip")]

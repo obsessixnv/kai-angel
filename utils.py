@@ -1,6 +1,6 @@
 import random
 import asyncio
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from aiogram.types import Message
 
 # Keywords that trigger Kai's interest in MEDIUM mode
@@ -81,3 +81,29 @@ async def send_rapid_fire_messages(message: Message, texts: List[str]):
             delay = random.uniform(0.6, 1.4)
             await asyncio.sleep(delay)
         await message.answer(text)
+
+
+def build_people_context(profiles: List[Dict[str, Any]],
+                         memories_map: Dict[int, List[Dict[str, Any]]]) -> str:
+    """Build a 'PEOPLE IN THIS CHAT' section for the system prompt."""
+    if not profiles:
+        return ""
+
+    lines = ["\nPEOPLE IN THIS CHAT YOU REMEMBER:\n"]
+    for p in profiles:
+        username = p.get("username") or p.get("display_name") or "чел"
+        relationship = p.get("relationship") or "знакомый"
+        notes = p.get("notes") or ""
+
+        user_memories = memories_map.get(p.get("user_id", 0), [])
+        memory_texts = [m["memory_text"] for m in user_memories[:2]]
+        memories_str = " | ".join(memory_texts) if memory_texts else ""
+
+        line = f"@{username} — {relationship}"
+        if notes:
+            line += f". {notes}"
+        if memories_str:
+            line += f". ты помнишь: {memories_str}"
+        lines.append(line)
+
+    return "\n".join(lines)

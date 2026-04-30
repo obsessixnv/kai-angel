@@ -19,9 +19,8 @@ from utils import (
     should_trigger_in_medium,
     split_response,
     send_rapid_fire_messages,
+    build_people_context,
 )
-
-load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_USERNAME = os.getenv("OWNER_USERNAME", "")
@@ -49,6 +48,62 @@ async def get_bot_info():
 async def get_bot_username() -> str:
     await get_bot_info()
     return _bot_username
+
+
+async def _analyze_user_background(chat_id: int, user_id: int, username: str, profile: dict):
+    """Background task: analyze user vibe and update profile."""
+    try:
+        recent_msgs = db.get_user_recent_messages(chat_id, user_id, limit=15)
+        current_profile_str = (
+            f"vibe: {profile.get('vibe_score', 0)}, "
+            f"relationship: {profile.get('relationship', 'знакомый')}, "
+            f"notes: {profile.get('notes', '')}"
+        )
+
+        analysis = await llm_client.analyze_user_profile(
+            username=username,
+            current_profile=current_profile_str,
+            recent_messages=[m["message_text"] for m in recent_msgs],
+        )
+
+        if not analysis:
+            return
+
+        db.update_user_profile(
+            chat_id=chat_id,
+            user_id=user_id,
+            vibe_score=float(analysis.get("vibe_score", profile.get("vibe_score", 0))),
+            relationship=str(analysis.get("relationship", profile.get("relationship", "знакомый"))),
+            notes=str(analysis.get("notes", profile.get("notes", ""))),
+        )
+
+        for mem in analysis.get("new_memories", []):
+            if mem and isinstance(mem, str) and len(mem.strip()) > 3:
+                db.add_user_memory(chat_id, user_id, mem.strip())
+
+    except Exception as e:
+        logger.error(f"Background analysis error for user {user_id}: {e}")
+
+
+async def _build_system_prompt_with_people(chat_id: int, base_system: str) -> str:
+    """Inject people context into the system prompt."""
+    recent_user_ids = db.get_recent_speaker_ids(chat_id, limit_messages=20)
+
+    if not recent_user_ids:
+        return base_system
+
+    profiles = db.get_recent_speaker_profiles(chat_id, recent_user_ids)
+    if not profiles:
+        return base_system
+
+    memories_map = {}
+    for p in profiles:
+        uid = p.get("user_id", 0)
+        if uid:
+            memories_map[uid] = db.get_user_memories(chat_id, uid, limit=2)
+
+    people_ctx = build_people_context(profiles, memories_map)
+    return base_system + people_ctx
 
 
 @router.message(Command("start"))
@@ -90,8 +145,36 @@ async def cmd_clear(message: types.Message):
     """Clear chat history (owner only)."""
     if OWNER_USERNAME and message.from_user and message.from_user.username != OWNER_USERNAME:
         return
-    # Simple clear: we don't delete from DB but can add if needed
     await message.answer("история очищена 🍸")
+
+
+@router.message(Command("whoami"))
+async def cmd_whoami(message: types.Message):
+    """Show what Kai thinks of you."""
+    if not message.from_user:
+        return
+
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    profile = db.get_or_create_user_profile(
+        chat_id, user_id,
+        message.from_user.username,
+        message.from_user.first_name
+    )
+
+    memories = db.get_user_memories(chat_id, user_id, limit=3)
+    mem_text = "\n".join(f"- {m['memory_text']}" for m in memories) if memories else "пока ничего не помню 🍸"
+
+    vibe = profile.get("vibe_score", 0)
+    rel = profile.get("relationship", "знакомый")
+    notes = profile.get("notes", "")
+
+    await message.answer(
+        f"ты для меня: {rel}\n"
+        f"vibe: {vibe}/10\n"
+        f"{notes}\n\n"
+        f"помню:\n{mem_text}"
+    )
 
 
 @router.message(F.chat.type == ChatType.PRIVATE)
@@ -102,23 +185,35 @@ async def handle_private_message(message: types.Message):
 
     chat_id = message.chat.id
     user = message.from_user
-    username = user.username or user.first_name if user else "unknown"
+    if not user:
+        return
+
+    username = user.username or user.first_name
     text = message.text or message.caption or ""
 
     # Save incoming message
     db.save_message(
         chat_id=chat_id,
-        user_id=user.id if user else 0,
+        user_id=user.id,
         username=username,
         message_text=text,
         timestamp=datetime.utcnow(),
         is_bot=False,
     )
 
-    # In private chat, always respond (no activity modes needed)
-    history = db.get_chat_history(chat_id, limit=500)
+    # Track user profile
+    profile = db.get_or_create_user_profile(chat_id, user.id, username, user.first_name)
+    db.increment_interaction_count(chat_id, user.id)
 
-    full_system = SYSTEM_PROMPT + "\nYou are chatting 1-on-1 in private messages. Be natural."
+    # Analyze every 5 messages (fire and forget)
+    if profile.get("interaction_count", 0) % 5 == 0:
+        asyncio.create_task(_analyze_user_background(chat_id, user.id, username, profile))
+
+    # Build system prompt with people context
+    base_system = SYSTEM_PROMPT + "\nYou are chatting 1-on-1 in private messages. Be natural."
+    full_system = await _build_system_prompt_with_people(chat_id, base_system)
+
+    history = db.get_chat_history(chat_id, limit=500)
 
     await bot.send_chat_action(chat_id=chat_id, action="typing")
 
@@ -164,18 +259,29 @@ async def handle_group_message(message: types.Message):
     bot_username = await get_bot_username()
     chat_id = message.chat.id
     user = message.from_user
-    username = user.username or user.first_name if user else "unknown"
+    if not user:
+        return
+
+    username = user.username or user.first_name
     text = message.text or message.caption or ""
 
     # Save incoming message
     db.save_message(
         chat_id=chat_id,
-        user_id=user.id if user else 0,
+        user_id=user.id,
         username=username,
         message_text=text,
         timestamp=datetime.utcnow(),
         is_bot=False,
     )
+
+    # Track user profile
+    profile = db.get_or_create_user_profile(chat_id, user.id, username, user.first_name)
+    db.increment_interaction_count(chat_id, user.id)
+
+    # Analyze every 5 messages (fire and forget)
+    if profile.get("interaction_count", 0) % 5 == 0:
+        asyncio.create_task(_analyze_user_background(chat_id, user.id, username, profile))
 
     # Get current mode
     mode = db.get_chat_mode(chat_id)
@@ -189,15 +295,15 @@ async def handle_group_message(message: types.Message):
     elif mode == "medium":
         should_respond = should_trigger_in_medium(message, bot_username, _bot_id)
     elif mode == "high":
-        # In high mode, we let the LLM decide by always asking
         should_respond = True
 
     if not should_respond:
         return
 
-    # Build full system prompt with activity instruction
+    # Build full system prompt with activity instruction + people context
     activity_instruction = ACTIVITY_INSTRUCTIONS.get(mode, "")
-    full_system = SYSTEM_PROMPT + "\n" + activity_instruction
+    base_system = SYSTEM_PROMPT + "\n" + activity_instruction
+    full_system = await _build_system_prompt_with_people(chat_id, base_system)
 
     # Get conversation history
     history = db.get_chat_history(chat_id, limit=500)
@@ -217,11 +323,10 @@ async def handle_group_message(message: types.Message):
     if not response_text:
         return
 
-    # Check for skip (handle extra whitespace/punctuation)
+    # Check for skip
     stripped = response_text.strip().lower()
     if stripped in ("<skip>", "skip", "<skip>"):
         return
-    # Also check if response only contains skip-like content
     cleaned = stripped.replace("<", "").replace(">", "").strip()
     if cleaned == "skip":
         return

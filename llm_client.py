@@ -1,4 +1,6 @@
 import os
+import json
+import re
 import aiohttp
 from typing import List, Dict, Any, Optional
 
@@ -93,3 +95,84 @@ async def generate_response(
                 return None
 
             return parts[0].get("text")
+
+
+async def analyze_user_profile(
+    username: str,
+    current_profile: str,
+    recent_messages: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Analyze a user's vibe and update their profile. Returns parsed JSON or None."""
+    from prompts import USER_ANALYSIS_PROMPT
+
+    messages_text = "\n".join(f"- {m}" for m in recent_messages)
+
+    prompt = USER_ANALYSIS_PROMPT.format(
+        username=username,
+        current_profile=current_profile,
+        recent_messages=messages_text,
+    )
+
+    api_key = _get_api_key()
+
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 400,
+        }
+    }
+
+    params = {"key": api_key}
+    headers = {"Content-Type": "application/json"}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(GEMINI_URL, json=payload, params=params, headers=headers) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise Exception(f"Gemini API error {resp.status}: {text}")
+
+            data = await resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                return None
+
+            text = parts[0].get("text", "")
+            return _extract_json(text)
+
+
+def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+    """Try to extract JSON from LLM response."""
+    text = text.strip()
+
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from markdown code block
+    match = re.search(r'```(?:json)?\s*(.*?)```', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding the first { and last }
+    start = text.find('{')
+    end = text.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None

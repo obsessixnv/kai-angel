@@ -33,6 +33,33 @@ def init_db():
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            display_name TEXT,
+            vibe_score REAL DEFAULT 0,
+            relationship TEXT DEFAULT 'знакомый',
+            notes TEXT DEFAULT '',
+            interaction_count INTEGER DEFAULT 0,
+            last_analyzed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(chat_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_profiles_chat_user ON user_profiles(chat_id, user_id);
+
+        CREATE TABLE IF NOT EXISTS user_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            memory_text TEXT NOT NULL,
+            importance INTEGER DEFAULT 3,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memories_chat_user ON user_memories(chat_id, user_id);
     """)
     conn.commit()
     conn.close()
@@ -89,3 +116,137 @@ def set_chat_mode(chat_id: int, mode: str):
     )
     conn.commit()
     conn.close()
+
+
+# ─── User Profiles ───
+
+def get_or_create_user_profile(chat_id: int, user_id: int, username: Optional[str],
+                               display_name: Optional[str]) -> Dict[str, Any]:
+    conn = get_db()
+    cursor = conn.execute(
+        "SELECT * FROM user_profiles WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id)
+    )
+    row = cursor.fetchone()
+    if row:
+        conn.close()
+        return dict(row)
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """INSERT INTO user_profiles
+           (chat_id, user_id, username, display_name, vibe_score, relationship, notes,
+            interaction_count, last_analyzed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 0, 'знакомый', '', 0, ?, ?, ?)""",
+        (chat_id, user_id, username, display_name, now, now, now)
+    )
+    conn.commit()
+    cursor = conn.execute(
+        "SELECT * FROM user_profiles WHERE chat_id = ? AND user_id = ?",
+        (chat_id, user_id)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row)
+
+
+def increment_interaction_count(chat_id: int, user_id: int):
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute(
+        """UPDATE user_profiles
+           SET interaction_count = interaction_count + 1, updated_at = ?
+           WHERE chat_id = ? AND user_id = ?""",
+        (now, chat_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_user_profile(chat_id: int, user_id: int, vibe_score: float,
+                        relationship: str, notes: str):
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute(
+        """UPDATE user_profiles
+           SET vibe_score = ?, relationship = ?, notes = ?, last_analyzed_at = ?, updated_at = ?
+           WHERE chat_id = ? AND user_id = ?""",
+        (vibe_score, relationship, notes, now, now, chat_id, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ─── User Memories ───
+
+def add_user_memory(chat_id: int, user_id: int, memory_text: str, importance: int = 3):
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO user_memories (chat_id, user_id, memory_text, importance, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (chat_id, user_id, memory_text, importance, now)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_memories(chat_id: int, user_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    conn = get_db()
+    cursor = conn.execute(
+        """SELECT memory_text, importance, created_at
+           FROM user_memories
+           WHERE chat_id = ? AND user_id = ?
+           ORDER BY importance DESC, created_at DESC
+           LIMIT ?""",
+        (chat_id, user_id, limit)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_user_recent_messages(chat_id: int, user_id: int, limit: int = 15) -> List[Dict[str, Any]]:
+    conn = get_db()
+    cursor = conn.execute(
+        """SELECT message_text, timestamp
+           FROM messages
+           WHERE chat_id = ? AND user_id = ? AND is_bot = 0
+           ORDER BY timestamp DESC
+           LIMIT ?""",
+        (chat_id, user_id, limit)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in reversed(rows)]
+
+
+def get_recent_speaker_ids(chat_id: int, limit_messages: int = 20) -> List[int]:
+    conn = get_db()
+    cursor = conn.execute(
+        """SELECT DISTINCT user_id
+           FROM messages
+           WHERE chat_id = ? AND is_bot = 0 AND user_id != 0
+           ORDER BY timestamp DESC
+           LIMIT ?""",
+        (chat_id, limit_messages)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [row["user_id"] for row in rows]
+
+
+def get_recent_speaker_profiles(chat_id: int, user_ids: List[int]) -> List[Dict[str, Any]]:
+    if not user_ids:
+        return []
+    conn = get_db()
+    placeholders = ",".join("?" * len(user_ids))
+    cursor = conn.execute(
+        f"""SELECT user_id, username, display_name, vibe_score, relationship, notes
+            FROM user_profiles
+            WHERE chat_id = ? AND user_id IN ({placeholders})""",
+        (chat_id, *user_ids)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

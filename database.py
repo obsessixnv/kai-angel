@@ -30,6 +30,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS chat_settings (
             chat_id INTEGER PRIMARY KEY,
             activity_mode TEXT NOT NULL DEFAULT 'small',
+            chat_type TEXT,
+            last_proactive_at TEXT,
+            next_proactive_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -103,16 +106,45 @@ def get_chat_mode(chat_id: int) -> str:
     return row["activity_mode"] if row else "small"
 
 
-def set_chat_mode(chat_id: int, mode: str):
+def set_chat_mode(chat_id: int, mode: str, chat_type: str = None):
     now = datetime.utcnow().isoformat()
     conn = get_db()
     conn.execute(
-        """INSERT INTO chat_settings (chat_id, activity_mode, created_at, updated_at)
-           VALUES (?, ?, ?, ?)
+        """INSERT INTO chat_settings (chat_id, activity_mode, chat_type, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(chat_id) DO UPDATE SET
                activity_mode = excluded.activity_mode,
+               chat_type = COALESCE(excluded.chat_type, chat_settings.chat_type),
                updated_at = excluded.updated_at""",
-        (chat_id, mode.lower(), now, now)
+        (chat_id, mode.lower(), chat_type, now, now)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_chats_due_for_proactive(current_time: datetime) -> List[Dict[str, Any]]:
+    conn = get_db()
+    cursor = conn.execute(
+        """SELECT chat_id, activity_mode, last_proactive_at, next_proactive_at
+           FROM chat_settings
+           WHERE (next_proactive_at IS NULL OR next_proactive_at <= ?)
+             AND activity_mode != 'off'""",
+        (current_time.isoformat(),)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def schedule_next_proactive(chat_id: int, current_time: datetime, hours: float):
+    from datetime import timedelta
+    next_time = current_time + timedelta(hours=hours)
+    conn = get_db()
+    conn.execute(
+        """UPDATE chat_settings
+           SET last_proactive_at = ?, next_proactive_at = ?
+           WHERE chat_id = ?""",
+        (current_time.isoformat(), next_time.isoformat(), chat_id)
     )
     conn.commit()
     conn.close()

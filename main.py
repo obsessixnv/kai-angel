@@ -2,9 +2,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import random
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ChatType
@@ -12,7 +13,7 @@ from aiogram.filters import Command
 
 import database as db
 import llm_client
-from prompts import SYSTEM_PROMPT, ACTIVITY_INSTRUCTIONS, SKIP_RESPONSE
+from prompts import SYSTEM_PROMPT, ACTIVITY_INSTRUCTIONS, SKIP_RESPONSE, PROACTIVE_MESSAGES
 from utils import (
     is_directly_addressed,
     is_username_tagged,
@@ -136,7 +137,13 @@ async def cmd_mode(message: types.Message):
         await message.answer("не знаю такой режим блять\nварианты: off, small, medium, high")
         return
 
-    db.set_chat_mode(chat_id, new_mode)
+    chat_type = message.chat.type.value if message.chat else None
+    db.set_chat_mode(chat_id, new_mode, chat_type)
+
+    # Schedule first proactive message for group chats (1-3 hours from now)
+    if chat_type in ("group", "supergroup") and new_mode != "off":
+        db.schedule_next_proactive(chat_id, datetime.utcnow(), hours=random.uniform(1, 3))
+
     await message.answer(f"режим: {new_mode} 🍸")
 
 
@@ -351,9 +358,60 @@ async def handle_group_message(message: types.Message):
         )
 
 
+async def proactive_messaging_loop():
+    """Background task: randomly send proactive messages to active group chats."""
+    await asyncio.sleep(30)  # Wait for bot to fully start
+
+    while True:
+        try:
+            now = datetime.utcnow()
+            chats = db.get_chats_due_for_proactive(now)
+
+            for chat in chats:
+                chat_id = chat["chat_id"]
+                mode = chat.get("activity_mode", "small")
+
+                # Skip if mode is off
+                if mode == "off":
+                    db.schedule_next_proactive(chat_id, now, hours=random.uniform(24, 48))
+                    continue
+
+                # Pick random message
+                text = random.choice(PROACTIVE_MESSAGES)
+
+                # Send with small delay for natural feel
+                await bot.send_chat_action(chat_id=chat_id, action="typing")
+                await asyncio.sleep(random.uniform(1.0, 2.5))
+                await bot.send_message(chat_id=chat_id, text=text)
+
+                # Save to history
+                db.save_message(
+                    chat_id=chat_id,
+                    user_id=0,
+                    username="Kai Angel",
+                    message_text=text,
+                    timestamp=now,
+                    is_bot=True,
+                )
+
+                # Schedule next (1-2 days)
+                db.schedule_next_proactive(chat_id, now, hours=random.uniform(24, 48))
+                logger.info(f"Proactive message sent to chat {chat_id}: {text}")
+
+        except Exception as e:
+            logger.error(f"Proactive messaging error: {e}")
+
+        # Check every 10 minutes
+        await asyncio.sleep(600)
+
+
 async def main():
     db.init_db()
     dp.include_router(router)
+
+    # Start background proactive messaging task
+    asyncio.create_task(proactive_messaging_loop())
+
     await dp.start_polling(bot)
 
 
